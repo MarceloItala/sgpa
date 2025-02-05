@@ -55,7 +55,7 @@
 
             <div class="mb-3">
                 <label for="password" class="form-label">Senha:</label>
-                <input type="password" class="form-control" id="password" name="password" value="admin@123" required>
+                <input type="password" class="form-control" id="password" name="password" value="Bit@12120" required>
                 <div class="invalid-feedback">
                     Por favor, informe sua senha.
                 </div>
@@ -95,6 +95,7 @@
             submitButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Aguarde...';
             
             try {
+                console.log('Enviando requisição de login...');
                 // Send login request
                 const response = await fetch('/api/auth/login', {
                     method: 'POST',
@@ -104,12 +105,15 @@
                     body: JSON.stringify({ email, password })
                 });
                 
+                console.log('Resposta recebida:', response.status);
                 const data = await response.json();
+                console.log('Dados recebidos:', data);
                 
                 if (!response.ok) {
                     throw new Error(data.error || 'Erro ao fazer login');
                 }
                 
+                console.log('Login bem sucedido, redirecionando...');
                 // Redirect to dashboard on success
                 window.location.href = '/dashboard';
                 

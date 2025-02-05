@@ -3,14 +3,27 @@ declare(strict_types=1);
 
 namespace SGPA\Core;
 
+use SGPA\Controllers\AdminController;
+use SGPA\Controllers\AuthController;
+use SGPA\Controllers\CompanyController;
+use SGPA\Controllers\UserController;
+
 class Router
 {
     private array $routes = [];
     private string $basePath;
+    private AdminController $adminController;
+    private AuthController $authController;
+    private CompanyController $companyController;
+    private UserController $userController;
 
     public function __construct()
     {
         $this->basePath = dirname(dirname(__DIR__));
+        $this->adminController = new AdminController();
+        $this->authController = new AuthController();
+        $this->companyController = new CompanyController();
+        $this->userController = new UserController();
     }
 
     public function get(string $path, $handler): void
@@ -45,11 +58,15 @@ class Router
 
     public function route(): void
     {
+        // Aplica o middleware de tenant
+        $tenantMiddleware = new \SGPA\Middleware\TenantMiddleware();
+        $tenantMiddleware->handle();
+
         $method = $_SERVER['REQUEST_METHOD'];
-        $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '/';
 
         // Normaliza a URI removendo trailing slashes
-        $uri = rtrim($uri, '/');
+        $uri = $uri !== null ? rtrim($uri, '/') : '/';
         if (empty($uri)) {
             $uri = '/';
         }
@@ -127,5 +144,26 @@ class Router
         http_response_code($code);
         header('Content-Type: application/json');
         echo json_encode(['error' => $message]);
+    }
+
+    // Getters para os controllers
+    public function getAdminController(): AdminController
+    {
+        return $this->adminController;
+    }
+
+    public function getAuthController(): AuthController
+    {
+        return $this->authController;
+    }
+
+    public function getCompanyController(): CompanyController
+    {
+        return $this->companyController;
+    }
+
+    public function getUserController(): UserController
+    {
+        return $this->userController;
     }
 }

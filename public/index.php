@@ -46,8 +46,8 @@ set_exception_handler(function (\Throwable $e) {
     exit;
 });
 
-// Inicializa o roteador
-$router = new SGPA\Core\Router();
+// Carrega as rotas
+$router = require __DIR__ . '/../src/routes.php';
 
 // Middleware de autenticação
 $auth = function() {

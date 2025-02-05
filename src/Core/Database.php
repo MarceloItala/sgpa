@@ -10,7 +10,7 @@ class Database
 {
     private static ?PDO $instance = null;
 
-    public static function getInstance(): PDO
+    public static function getInstance(): self
     {
         if (self::$instance === null) {
             try {
@@ -36,6 +36,11 @@ class Database
             }
         }
 
+        return new self();
+    }
+
+    public function getConnection(): PDO
+    {
         return self::$instance;
     }
 }

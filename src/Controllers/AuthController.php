@@ -1,163 +1,180 @@
 <?php
+declare(strict_types=1);
+
 namespace SGPA\Controllers;
 
-class AuthController {
-    public function login() {
-        // Verifica se é uma requisição POST
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            header('Content-Type: application/json');
-            echo json_encode(['error' => 'Método não permitido']);
-            return;
-        }
+use SGPA\Core\Auth;
+use SGPA\Core\TenantScope;
+use SGPA\Models\User;
+use SGPA\Models\Company;
+use SGPA\Exceptions\ValidationException;
 
-        // Pega os dados do POST
-        $data = json_decode(file_get_contents('php://input'), true);
-        
-        // Valida os dados
-        if (!isset($data['email']) || !isset($data['password'])) {
-            http_response_code(400);
-            header('Content-Type: application/json');
-            echo json_encode(['error' => 'Email e senha são obrigatórios']);
-            return;
-        }
-
+class AuthController
+{
+    public function login(): void
+    {
         try {
-            // Debug log
-            if ($_ENV['APP_DEBUG']) {
-                error_log("Tentativa de login para o email: {$data['email']}");
-            }
-
-            // Conecta ao banco de dados
-            $pdo = new \PDO(
-                "mysql:host={$_ENV['DB_HOST']};dbname={$_ENV['DB_NAME']};charset=utf8mb4",
-                $_ENV['DB_USER'],
-                $_ENV['DB_PASS'],
-                [
-                    \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
-                    \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC
-                ]
-            );
-
-            // Busca o usuário
-            $stmt = $pdo->prepare('SELECT * FROM users WHERE email = ? AND deleted_at IS NULL');
-            $stmt->execute([$data['email']]);
-            $user = $stmt->fetch();
-
-            // Debug log
-            if ($_ENV['APP_DEBUG']) {
-                error_log("Usuário encontrado: " . ($user ? 'Sim' : 'Não'));
-                if ($user) {
-                    error_log("Status do usuário: {$user['status']}");
-                }
-            }
-
-            // Verifica se o usuário existe e a senha está correta
-            if (!$user || !password_verify($data['password'], $user['password'])) {
-                http_response_code(401);
-                header('Content-Type: application/json');
-                echo json_encode(['error' => 'Email ou senha inválidos']);
+            $data = json_decode(file_get_contents('php://input'), true);
+            
+            if (!isset($data['email']) || !isset($data['password'])) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Email e senha são obrigatórios']);
                 return;
             }
 
-            // Verifica se o usuário está ativo
-            if ($user['status'] !== 'ativo') {
+            // Se estiver no subdomínio admin, usa o tenant administrativo
+            if (TenantScope::isAdmin()) {
+                $data['tenant_id'] = TenantScope::ADMIN_TENANT_ID;
+                error_log('Debug - Login admin: ' . json_encode($data));
+            } else if (!isset($data['tenant_id'])) {
+                http_response_code(400);
+                echo json_encode(['error' => 'ID do tenant é obrigatório']);
+                return;
+            }
+            
+            // Busca o usuário pelo email e tenant
+            $user = User::findByEmail($data['email'], $data['tenant_id']);
+            error_log('Debug - Usuário encontrado: ' . ($user ? 'sim' : 'não'));
+            
+            if (!$user) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Email ou senha inválidos']);
+                error_log('Debug - Usuário não encontrado');
+                return;
+            }
+
+            if (!$user->verifyPassword($data['password'])) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Email ou senha inválidos']);
+                error_log('Debug - Senha incorreta');
+                return;
+            }
+            
+            if ($user->getStatus() !== 'ativo') {
                 http_response_code(403);
-                header('Content-Type: application/json');
                 echo json_encode(['error' => 'Usuário inativo']);
                 return;
             }
-
+            
+            // Busca o tenant
+            $tenant = TenantScope::findById($user->getTenantId());
+            
+            if (!$tenant || $tenant->getStatus() !== 'ativo') {
+                http_response_code(403);
+                echo json_encode(['error' => 'Tenant inativo']);
+                return;
+            }
+            
             // Atualiza o último login
-            $stmt = $pdo->prepare('UPDATE users SET last_login = NOW() WHERE id = ?');
-            $stmt->execute([$user['id']]);
-
-            // Busca o tenant do usuário
-            $stmt = $pdo->prepare('SELECT * FROM tenants WHERE id = ?');
-            $stmt->execute([$user['tenant_id']]);
-            $tenant = $stmt->fetch();
-
-            // Busca as roles do usuário
-            $stmt = $pdo->prepare('
-                SELECT r.* 
-                FROM roles r 
-                JOIN user_roles ur ON ur.role_id = r.id 
-                WHERE ur.user_id = ?
-            ');
-            $stmt->execute([$user['id']]);
-            $roles = $stmt->fetchAll();
-
-            // Busca as permissões do usuário
-            $stmt = $pdo->prepare('
-                SELECT DISTINCT p.* 
-                FROM permissions p 
-                JOIN role_permissions rp ON rp.permission_id = p.id 
-                JOIN user_roles ur ON ur.role_id = rp.role_id 
-                WHERE ur.user_id = ?
-            ');
-            $stmt->execute([$user['id']]);
-            $permissions = $stmt->fetchAll();
-
-            // Garante que a sessão está iniciada
-            if (session_status() !== PHP_SESSION_ACTIVE) {
-                session_start();
-            }
-
-            // Regenera o ID da sessão por segurança
-            session_regenerate_id(true);
-
-            // Cria a sessão
-            $_SESSION['user'] = [
-                'id' => $user['id'],
-                'name' => $user['name'],
-                'email' => $user['email'],
-                'tenant_id' => $user['tenant_id'],
-                'tenant' => $tenant,
-                'roles' => $roles,
-                'permissions' => $permissions
-            ];
-
-            // Debug log
-            if ($_ENV['APP_DEBUG']) {
-                error_log("Sessão criada com sucesso. ID da sessão: " . session_id());
-                error_log("Dados da sessão: " . json_encode($_SESSION['user']));
-            }
-
-            // Retorna os dados do usuário
-            header('Content-Type: application/json');
+            $user->updateLastLogin();
+            
+            // Define o tenant atual
+            TenantScope::setTenant($user->getTenantId());
+            
+            // Gera o token JWT
+            $token = Auth::generateToken($user);
+            
+            // Define o cookie com o token
+            setcookie('token', $token, [
+                'expires' => time() + (int)$_ENV['JWT_EXPIRATION'],
+                'path' => '/',
+                'domain' => '.sgpa.app.br',
+                'secure' => true,
+                'httponly' => true,
+                'samesite' => 'Lax'
+            ]);
+            
+            // Busca a empresa do usuário (no caso do admin, é o próprio tenant)
+            $company = Company::findById($user->getTenantId());
+            
+            error_log('Debug - Login bem sucedido para: ' . $user->getEmail());
+            
+            // Retorna os dados do usuário e o token
             echo json_encode([
+                'token' => $token,
                 'user' => [
-                    'id' => $user['id'],
-                    'name' => $user['name'],
-                    'email' => $user['email'],
-                    'tenant' => $tenant,
-                    'roles' => $roles,
-                    'permissions' => array_map(fn($p) => $p['name'], $permissions)
+                    'id' => $user->getId(),
+                    'name' => $user->getName(),
+                    'email' => $user->getEmail(),
+                    'role' => $user->getRole(),
+                    'tenant_id' => $user->getTenantId(),
+                    'company' => $company ? [
+                        'id' => $company->getId(),
+                        'name' => $company->getCorporateName()
+                    ] : null
                 ]
             ]);
-
-        } catch (\PDOException $e) {
+        } catch (ValidationException $e) {
+            http_response_code(400);
+            echo json_encode([
+                'error' => $e->getMessage(),
+                'errors' => $e->getErrors()
+            ]);
+        } catch (\Exception $e) {
             error_log($e->getMessage());
             http_response_code(500);
-            header('Content-Type: application/json');
-            echo json_encode(['error' => 'Erro ao autenticar usuário']);
+            echo json_encode(['error' => 'Erro interno do servidor']);
         }
     }
 
-    public function logout() {
-        // Garante que a sessão está iniciada
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            session_start();
+    public function logout(): void
+    {
+        try {
+            // Limpa o tenant atual
+            TenantScope::clear();
+            
+            // Retorna sucesso
+            echo json_encode(['message' => 'Logout realizado com sucesso']);
+        } catch (\Exception $e) {
+            error_log($e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Erro ao realizar logout']);
         }
+    }
 
-        // Limpa e destrói a sessão
-        $_SESSION = [];
-        if (isset($_COOKIE[session_name()])) {
-            setcookie(session_name(), '', time() - 3600, '/');
+    public function me(): void
+    {
+        try {
+            $headers = getallheaders();
+            $authHeader = $headers['Authorization'] ?? '';
+            error_log('Debug - Headers recebidos: ' . json_encode($headers));
+            error_log('Debug - Authorization header: ' . $authHeader);
+            
+            if (!preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Token não fornecido']);
+                return;
+            }
+            
+            $token = $matches[1];
+            error_log('Debug - Token extraído: ' . $token);
+            $payload = Auth::validateToken($token);
+            error_log('Debug - Payload do token: ' . json_encode($payload));
+            
+            $user = User::findById($payload->uid);
+            error_log('Debug - Usuário encontrado: ' . ($user ? json_encode($user) : 'null'));
+            
+            // No caso do admin, usamos o tenant_id
+            $tenantId = $user->getTenantId();
+            error_log('Debug - Tenant ID do usuário: ' . $tenantId);
+            $company = Company::findById($tenantId);
+            
+            echo json_encode([
+                'user' => [
+                    'id' => $user->getId(),
+                    'name' => $user->getName(),
+                    'email' => $user->getEmail(),
+                    'role' => $user->getRole(),
+                    'company' => [
+                        'id' => $company->getId(),
+                        'name' => $company->getCorporateName()
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            error_log($e->getMessage());
+            http_response_code(401);
+            echo json_encode(['error' => 'Token inválido']);
         }
-        session_destroy();
-        
-        header('Content-Type: application/json');
-        echo json_encode(['message' => 'Logout realizado com sucesso']);
     }
 }
